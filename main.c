@@ -6,9 +6,18 @@
 #include <string.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 #include <netinet/in.h>
 
 int CTRL_C_PRESSED = 0;
+
+int isFile( const char* path )
+{
+	struct stat path_s;
+
+	return !stat( path, &path_s ) && S_ISREG( path_s.st_mode );
+}
 
 void sendResource( char* webroot, char* resource, int conn )
 {
@@ -20,7 +29,7 @@ void sendResource( char* webroot, char* resource, int conn )
 
 	int fd = open( full_path, O_RDONLY );
 
-	if( fd <= 0 )
+	if( fd <= 0  || !isFile( full_path ) )
 	{
 		char* file_not_found = "<html>\nNo such file\n</html>";
 		send( conn, file_not_found, strlen( file_not_found ), 0 );
@@ -53,11 +62,18 @@ void sendResource( char* webroot, char* resource, int conn )
 	free( file_content );
 }
 
-void parseRequestedResource( char* buf, char* resource )
+// 0 = success
+// 1 = error
+
+int parseRequestedResource( char* buf, int buf_len, char* resource )
 {
 	int i = 0;
 	while( buf[i] != ' ' )
+	{
 		++i;
+		if( i >= buf_len )
+			return 1;
+	}
 
 	++i;		// hack to skip the space
 	int j = 0;
@@ -68,18 +84,31 @@ void parseRequestedResource( char* buf, char* resource )
 			resource[j] = buf[i];
 		++i;
 		++j;
+		if( i >= buf_len )
+			return 1;
 	}
+
+	return 0;
 }
 
 void handleConnection( int conn, char* webroot )
 {
 	char buf[1024];
 	memset( buf, 0, sizeof( buf ) );
-	recv( conn, buf, sizeof( buf ), 0 );
+	int buf_len = recv( conn, buf, sizeof( buf ), 0 );
 
 	char resource[1024];
 	memset( resource, 0, sizeof( resource ) );
-	parseRequestedResource( buf, resource );
+	int success = parseRequestedResource( buf, buf_len, resource );
+
+	if(success == 1)
+	{
+		char* malformed_req_response = "<html>\nERROR Malformed Request\n</html>";
+		send( conn, malformed_req_response, strlen( malformed_req_response ), 0 );
+		printf( "[-] Client sent malformed request.\n" );
+		close( conn );
+		return;
+	}
 
 	printf( "[*] Client requested %s ", resource ); // status gets printed by send resource
 
@@ -125,7 +154,7 @@ int main(void)
 	char* webroot = ".";
 	// setup socket
 	char* host = "127.0.0.1";
-	int port = 80;	
+	int port = 8080;	
 	int sock = createSocket( host, port );
 
 	if( sock == -1 )
@@ -153,7 +182,7 @@ int main(void)
 	// listen for connections
 		listen( sock, 10 );
 	// handle connections
-		int conn = accept( sock, (struct sockaddr*) &client, &client_size );
+		int conn = accept( sock, (struct sockaddr*) &client, (socklen_t * restrict) &client_size );
 		if( conn < 0 )
 		{
 			perror( "[-] Failed to accept connection.\n" );
