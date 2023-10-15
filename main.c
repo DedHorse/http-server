@@ -4,6 +4,7 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <string.h>
+#include <arpa/inet.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 
@@ -169,7 +170,7 @@ int main(void)
 	}
 	// clean up
 	
-	close( socket );
+	close( sock );
 	printf( "[*] Exiting.\n" );
 
 	return 0;
