@@ -1,3 +1,4 @@
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -12,6 +13,12 @@
 
 int CTRL_C_PRESSED = 0;
 
+typedef struct _handle_conn_args
+{
+	int conn;
+	char* webroot;
+} handle_conn_args;
+
 int isFile( const char* path )
 {
 	struct stat path_s;
@@ -24,8 +31,6 @@ void sendResource( char* webroot, char* resource, int conn )
 	char full_path[ strlen(webroot) + strlen(resource) ];
 	strcpy( full_path, webroot );
 	strcat( full_path, resource );
-
-	//printf("%s\n", full_path);
 
 	int fd = open( full_path, O_RDONLY );
 
@@ -91,8 +96,14 @@ int parseRequestedResource( char* buf, int buf_len, char* resource )
 	return 0;
 }
 
-void handleConnection( int conn, char* webroot )
+void *handleConnection( void *args )
 {
+	handle_conn_args args_struct = *(handle_conn_args *) args;
+
+	int conn = args_struct.conn;
+	char* webroot = args_struct.webroot;
+
+	// int conn, char* webroot
 	char buf[1024];
 	memset( buf, 0, sizeof( buf ) );
 	int buf_len = recv( conn, buf, sizeof( buf ), 0 );
@@ -107,13 +118,15 @@ void handleConnection( int conn, char* webroot )
 		send( conn, malformed_req_response, strlen( malformed_req_response ), 0 );
 		printf( "[-] Client sent malformed request.\n" );
 		close( conn );
-		return;
+		pthread_exit( NULL );
 	}
 
 	printf( "[*] Client requested %s ", resource ); // status gets printed by send resource
 
 	sendResource( webroot, resource, conn );
 	close( conn );
+
+	pthread_exit( NULL );
 }
 
 int createSocket( char* host, int port )
@@ -176,7 +189,9 @@ int main(void)
 	printf( "[+] Listnening for connections.\n" );
 	
 	// TODO figure out how to handle this all with nonblocking I/O and threads.
-	
+
+	pthread_t thread_id;
+
 	while( !CTRL_C_PRESSED )
 	{
 	// listen for connections
@@ -193,7 +208,11 @@ int main(void)
 		inet_ntop( AF_INET, &client.sin_addr, client_ip, sizeof( client_ip ) );
 		printf( "[*] Connection from %s on port %d.\n", client_ip, ntohs( client.sin_port ) );
 
-		handleConnection( conn, webroot );
+		handle_conn_args args;
+		args.conn = conn;
+		args.webroot = webroot;
+
+		pthread_create( &thread_id, NULL, handleConnection, (void *)&args );
 
 	// back to loop, if ctrl+c pressed break
 	}
