@@ -10,6 +10,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <netinet/in.h>
+#include "http-09.h"
 
 int CTRL_C_PRESSED = 0;
 
@@ -26,75 +27,37 @@ int isFile( const char* path )
 	return !stat( path, &path_s ) && S_ISREG( path_s.st_mode );
 }
 
-void sendResource( char* webroot, char* resource, int conn )
+int getReqHttpVer( char* buf, int buf_len )
 {
-	char full_path[ strlen(webroot) + strlen(resource) ];
-	strcpy( full_path, webroot );
-	strcat( full_path, resource );
-
-	int fd = open( full_path, O_RDONLY );
-
-	if( fd <= 0  || !isFile( full_path ) )
+	char parsed_version[4];
+	parsed_version[3] = '\0';
+	for( int i = 4; i < buf_len; ++i )
 	{
-		char* file_not_found = "<html>\nNo such file\n</html>";
-		send( conn, file_not_found, strlen( file_not_found ), 0 );
-		close( conn );
-		printf( "(Not found)\n" );
-		return;
+		if( buf[i-4] == 'H' &&
+		    buf[i-3] == 'T' &&
+		    buf[i-2] == 'T' &&
+		    buf[i-1] == 'P' &&
+		    buf[i]   == '/' )
+		{
+			int j = i+1; // skip the slash
+			int ver_index = 0;
+			while( buf[j] != '\r' && buf[j] != '\n' )
+			{
+				if( ver_index > 2 )
+					return -1;
+				parsed_version[ver_index] = buf[j];
+				++ver_index;
+				++j;
+			}
+			break;
+		}
 	}
-	
-	FILE* fp = fdopen( fd, "r" );
-	fseek( fp, 0L, SEEK_END );
-	int file_size = ftell( fp );
-	rewind( fp );
-
-	char* file_content = malloc( file_size ); 
-
-	if( fread( file_content, sizeof( *file_content ), file_size, fp ) != file_size )
-	{
-		perror( "[-] Failed to read file" );
-		fclose( fp );
-		free( file_content );
-		return;
-	}
-
-	fclose( fp );
-
-	send( conn, file_content, file_size, 0 );
-
-	printf( "(Found)\n" );
-
-	free( file_content );
+	if( strcmp( parsed_version, "0.9" ) == 0 )
+		return 0;
+       return -1;	
 }
 
-// 0 = success
-// 1 = error
-
-int parseRequestedResource( char* buf, int buf_len, char* resource )
-{
-	int i = 0;
-	while( buf[i] != ' ' )
-	{
-		++i;
-		if( i >= buf_len )
-			return 1;
-	}
-
-	++i;		// hack to skip the space
-	int j = 0;
-
-	while( buf[i] != '\n' )
-	{
-		if( buf[i] != '\r' )
-			resource[j] = buf[i];
-		++i;
-		++j;
-		if( i >= buf_len )
-			return 1;
-	}
-
-	return 0;
-}
+// change this to only detect http version and let spec specific functions handle the rest
 
 void *handleConnection( void *args )
 {
@@ -103,27 +66,22 @@ void *handleConnection( void *args )
 	int conn = args_struct.conn;
 	char* webroot = args_struct.webroot;
 
-	// int conn, char* webroot
 	char buf[1024];
 	memset( buf, 0, sizeof( buf ) );
 	int buf_len = recv( conn, buf, sizeof( buf ), 0 );
 
-	char resource[1024];
-	memset( resource, 0, sizeof( resource ) );
-	int success = parseRequestedResource( buf, buf_len, resource );
+	int ver = getReqHttpVer( buf, buf_len );
 
-	if(success == 1)
+	switch( ver )
 	{
-		char* malformed_req_response = "<html>\nERROR Malformed Request\n</html>";
-		send( conn, malformed_req_response, strlen( malformed_req_response ), 0 );
-		printf( "[-] Client sent malformed request.\n" );
-		close( conn );
-		pthread_exit( NULL );
+		case 0:
+			http09Handler( buf, buf_len, conn, webroot );
+			break;
+		default:
+			printf( "[-] Couldn't get HTTP version.\n" );
+			break;
 	}
 
-	printf( "[*] Client requested %s ", resource ); // status gets printed by send resource
-
-	sendResource( webroot, resource, conn );
 	close( conn );
 
 	pthread_exit( NULL );
@@ -162,7 +120,7 @@ int main(void)
 {
 	printf( "[*] Starting.\n" );
 
-	signal(SIGINT, exit_prog);
+	signal( SIGINT, exit_prog );
 
 	char* webroot = ".";
 	// setup socket
@@ -194,13 +152,11 @@ int main(void)
 
 	while( !CTRL_C_PRESSED )
 	{
-	// listen for connections
 		listen( sock, 10 );
-	// handle connections
 		int conn = accept( sock, (struct sockaddr*) &client, (socklen_t * restrict) &client_size );
 		if( conn < 0 )
 		{
-			perror( "[-] Failed to accept connection.\n" );
+			printf( "[-] Failed to accept connection.\n" );
 			continue;
 		}
 	
